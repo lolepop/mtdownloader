@@ -3,7 +3,8 @@ class AsyncNode
     public long Start { get; private set; }
     public long End { get; private set; }
     public long Downloaded { get; set; } = 0;
-    public long Size { get => End - Start; }
+    public long Size { get => End - Start + 1; }
+    public long Remaining { get => Size - Downloaded; }
 
     public AsyncNode? Left { get; private set; }
     public AsyncNode? Right { get; private set; }

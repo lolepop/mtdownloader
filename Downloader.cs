@@ -43,8 +43,9 @@ class Downloader : IDisposable
             {
                 // sort by descending size to prevent subdividing small sections unnecessarily
                 var active = nodes
-                    .OrderByDescending(a => a.Size)
-                    .FirstOrDefault(n => n.End - n.Start - n.Downloaded > SplitThreshold);
+                    .Where(n => n.Remaining > SplitThreshold)
+                    // .MaxBy(a => a.Remaining); // why is this slower
+                    .MaxBy(a => a.Size);
                 active?.cts.Cancel();
             
                 var t = active?.SplitNode(cts.Token);
@@ -110,7 +111,7 @@ class Downloader : IDisposable
 
     public void Preallocate(long size)
     {
-        using (var fs = new FileStream(OutFile, FileMode.OpenOrCreate))
+        using (var fs = new FileStream(OutFile, FileMode.Create))
             fs.SetLength(size);
     }
 
