@@ -16,7 +16,6 @@ class Downloader : IDisposable
     private HashSet<AsyncNode> nodes = new HashSet<AsyncNode>();
     private CancellationTokenSource cts = new CancellationTokenSource();
     // private SemaphoreSlim semaphore;
-    private TaskCompletionSource downloadCompletionSource = new TaskCompletionSource();
 
     private static HttpClient client = new HttpClient();
 
@@ -34,8 +33,10 @@ class Downloader : IDisposable
         ServicePointManager.DefaultConnectionLimit = 1000;
     }
 
-    private void OnDownloadComplete(AsyncNode parent)
+    private async Task OnDownloadComplete(AsyncNode parent)
     {
+        Task[]? tasks = null;
+
         lock (_obj) // for hashset
         {
             nodes.Remove(parent);
@@ -54,15 +55,17 @@ class Downloader : IDisposable
                     (AsyncNode a, AsyncNode b) = t.Value;
                     nodes.Add(a);
                     nodes.Add(b);
-                    Task.Run(() => a.DownloadChunk());
-                    Task.Run(() => b.DownloadChunk());
+                    tasks = new Task[] {
+                        Task.Run(() => a.DownloadChunk()),
+                        Task.Run(() => b.DownloadChunk())
+                    };
                 }
             }
         }
 
-        // set to completed once there are no more jobs running
-        if (nodes.Count == 0)
-            downloadCompletionSource.SetResult();
+        if (tasks != null) // prevent mutex deadlock
+            await Task.WhenAll(tasks);
+
     }
 
     public async Task DownloadChunk(long start, long end, CancellationToken ct, AsyncNode parent)
@@ -97,14 +100,11 @@ class Downloader : IDisposable
             }
         }
         catch(TaskCanceledException) {}
-        catch(Exception)
-        {
-            throw;
-        }
+        catch(Exception) { throw; }
         finally
         {
             // semaphore.Release();
-            OnDownloadComplete(parent);
+            await OnDownloadComplete(parent);
         }
 
     }
@@ -117,11 +117,9 @@ class Downloader : IDisposable
 
     public async Task Start()
     {
-        foreach (var node in nodes)
-        {
-            var _ = Task.Run(() => node.DownloadChunk());
-        }
-        await downloadCompletionSource.Task;
+        await Task.WhenAll(
+            nodes.Select(node => Task.Run(() => node.DownloadChunk()))
+        );
     }
 
     private void createNodesFromLength(long length)
@@ -156,6 +154,5 @@ class Downloader : IDisposable
     {
         cts.Cancel();
         cts.Dispose();
-        downloadCompletionSource.TrySetResult();
     }
 }
