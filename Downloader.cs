@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 
 // TODO: dump tree to fs to resume downloading
-class Downloader : IDisposable
+public class Downloader : IDisposable
 {
     public const int BufferSize = 4096;
     public const int SplitThreshold = 1 * 1024 * 1024;
@@ -12,16 +12,16 @@ class Downloader : IDisposable
     public long Size { get; private set; }
     public string OutFile { get; set; }
 
-    private List<AsyncNode> orderedNodes = new List<AsyncNode>();
-    private HashSet<AsyncNode> nodes = new HashSet<AsyncNode>();
-    private CancellationTokenSource cts = new CancellationTokenSource();
+    public List<AsyncNode> OrderedNodes { get; } = new();
+    private HashSet<AsyncNode> nodes = new();
+    private CancellationTokenSource cts = new();
     // private SemaphoreSlim semaphore;
 
-    private static HttpClient client = new HttpClient();
+    private static HttpClient client = new();
 
     public delegate Task DownloadRange(long start, long end, CancellationToken ct, AsyncNode parent);
 
-    private object _obj = new Object();
+    private object _obj = new();
 
     public Downloader(string url, int parallelism, string outFile)
     {
@@ -36,6 +36,7 @@ class Downloader : IDisposable
     private async Task OnDownloadComplete(AsyncNode parent)
     {
         Task[]? tasks = null;
+        parent.Dispose();
 
         lock (_obj) // for hashset
         {
@@ -75,7 +76,7 @@ class Downloader : IDisposable
         try
         {
             var reqMsg = new HttpRequestMessage(HttpMethod.Get, Url);
-            reqMsg.Headers.Range = new RangeHeaderValue(start, end);
+            reqMsg.Headers.Range = new(start, end);
             
             var res = await client.SendAsync(reqMsg, HttpCompletionOption.ResponseHeadersRead, ct);
             if (res == null) return;
@@ -131,7 +132,7 @@ class Downloader : IDisposable
             var start = i * avgChunkSize;
             var node = new AsyncNode(start, start + (i != Parallelism - 1 ? avgChunkSize : excessChunk) - 1, cts.Token, DownloadChunk);
             nodes.Add(node);
-            orderedNodes.Add(node);
+            OrderedNodes.Add(node);
         }
     }
 
