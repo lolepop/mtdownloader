@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
-using System.Timers;
 using ShellProgressBar;
+using System.Reactive.Linq;
+using System.Reactive.Threading.Tasks;
 
 async Task Main(string[] args)
 {
@@ -34,20 +35,22 @@ Main(Environment.GetCommandLineArgs()).GetAwaiter().GetResult();
 
 internal class Progress
 {
-    public const int Ticks = 1000;
+    public const int Ticks = 100;
 
     private long totalSize;
 
     private Downloader instance;
-    private ProgressBar rootBar = new(Ticks, "Progress", barConfig);
+    private ProgressBar rootBar = new(Ticks, "", new ProgressBarOptions {
+        ProgressCharacter = '─',
+        ProgressBarOnBottom = true,
+        ShowEstimatedDuration = true
+    });
     private IProgress<float> rootBarProgression;
     private Dictionary<AsyncNode, (ChildProgressBar bar, IProgress<float> progression)> bars = new();
-    private System.Timers.Timer timer = new(100) {
-        AutoReset = true
-    };
+    private IObservable<int> timer;
 
     private CancellationToken token;
-    private TaskCompletionSource taskCompletionSource = new();
+    private object _obj = new();
 
     private static readonly ProgressBarOptions barConfig = new() {
         // DenseProgressBar = true,
@@ -61,19 +64,28 @@ internal class Progress
         this.instance = instance;
         this.token = token;
         this.rootBarProgression = rootBar.AsProgress<float>();
-        timer.Elapsed += Tick;
         this.totalSize = totalSize;
+
+        var b = Observable.Interval(TimeSpan.FromMilliseconds(Ticks))
+            .Select(_ => Tick());
+
+        var avg = b.EMADiff(Ticks);
+        
+        timer = b
+            .WithLatestFrom(avg)
+            .Do(a => SetAverageSpeed(a.First, a.Second))
+            .SelectMany(_ => Observable.Empty<int>());
     }
 
-    private void Tick(Object? source, ElapsedEventArgs e)
+    private void SetAverageSpeed(double downloaded, double avg)
     {
-        if (token.IsCancellationRequested)
-        {
-            timer.Enabled = false;
-            taskCompletionSource.SetResult();
-            return;
-        }
+        var remainingTime = (totalSize - downloaded) / avg;
+        rootBar.EstimatedDuration = TimeSpan.FromSeconds(double.IsInfinity(remainingTime) ? -1 : remainingTime);
+        rootBar.Message = $"Average Speed: {Util.GetBytesReadable((long)avg)}/s";
+    }
 
+    private long Tick()
+    {
         long totalDownloaded = 0;
         Parallel.ForEach(instance.OrderedNodes, n => {
             var mem = new Dictionary<AsyncNode, long>();
@@ -84,10 +96,13 @@ internal class Progress
             while (q.TryDequeue(out var o))
             {
                 (var parent, var self) = o;
-                if (parent != null && !bars.ContainsKey(self))
+                lock (_obj)
                 {
-                    var b = bars[parent].bar.Spawn(Ticks, "", barConfig);
-                    bars.Add(self, (b, b.AsProgress<float>()));
+                    if (parent != null && !bars.ContainsKey(self))
+                    {
+                        var b = bars[parent].bar.Spawn(Ticks, Util.GetBytesReadable(self.Size), barConfig);
+                        bars.Add(self, (b, b.AsProgress<float>()));
+                    }
                 }
                 bars[self].progression.Report(mem[self] / (float)self.Size);
 
@@ -96,20 +111,19 @@ internal class Progress
             }
         });
         
-        rootBarProgression.Report(totalDownloaded / (float)totalSize);
-
+        rootBarProgression.Report((float)(totalDownloaded / (double)totalSize));
+        return totalDownloaded;
     }
 
     public async Task Start()
     {
         foreach (var n in instance.OrderedNodes)
         {
-            var b = rootBar.Spawn(Ticks, "Main Chunk", barConfig);
+            var b = rootBar.Spawn(Ticks, Util.GetBytesReadable(n.Size), barConfig);
             bars.Add(n, (b, b.AsProgress<float>()));
         }
 
-        timer.Enabled = true;
-        await taskCompletionSource.Task;
+        await timer.ToTask(token);
     }
 
 }
@@ -121,5 +135,61 @@ internal static class Util
         var total = self.Downloaded + (self.Left?.MemoiseDownloaded(d) ?? 0) + (self.Right?.MemoiseDownloaded(d) ?? 0);
         d.Add(self, total);
         return total;
+    }
+
+    public static IObservable<double> EMADiff(this IObservable<long> self, int emitSpeed, double smoothCoeff = 0.5)
+    {
+        var t = 1000.0 / emitSpeed;
+        var smooth = smoothCoeff / t;
+        return self
+            .Scan<long, double?>(null, (acc, v) => acc != null ? smooth * v + (1 - smooth) * acc : v)
+            .Select<double?, double>(a => a!.Value);
+    }
+
+    public static string GetBytesReadable(long i)
+    {
+        // Get absolute value
+        long absolute_i = (i < 0 ? -i : i);
+        // Determine the suffix and readable value
+        string suffix;
+        double readable;
+        if (absolute_i >= 0x1000000000000000) // Exabyte
+        {
+            suffix = "EB";
+            readable = (i >> 50);
+        }
+        else if (absolute_i >= 0x4000000000000) // Petabyte
+        {
+            suffix = "PB";
+            readable = (i >> 40);
+        }
+        else if (absolute_i >= 0x10000000000) // Terabyte
+        {
+            suffix = "TB";
+            readable = (i >> 30);
+        }
+        else if (absolute_i >= 0x40000000) // Gigabyte
+        {
+            suffix = "GB";
+            readable = (i >> 20);
+        }
+        else if (absolute_i >= 0x100000) // Megabyte
+        {
+            suffix = "MB";
+            readable = (i >> 10);
+        }
+        else if (absolute_i >= 0x400) // Kilobyte
+        {
+            suffix = "KB";
+            readable = i;
+        }
+        else
+        {
+            return i.ToString("0 B"); // Byte
+        }
+        // Divide by 1024 to get fractional value
+        readable = (readable / 1024);
+        // Return formatted number with suffix
+        return readable.ToString("0.### ") + suffix;
     }
 }

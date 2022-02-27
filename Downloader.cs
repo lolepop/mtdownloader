@@ -1,11 +1,10 @@
 using System.Net;
-using System.Net.Http.Headers;
 
 // TODO: dump tree to fs to resume downloading
 public class Downloader : IDisposable
 {
     public const int BufferSize = 4096;
-    public const int SplitThreshold = 1 * 1024 * 1024;
+    public const int SplitThreshold = 512 * 1024;
 
     public string Url { get; private set; }
     public int Parallelism { get; private set; }
